@@ -50,6 +50,11 @@ enum PieceType : uint8_t
     NONETYPE
 };
 
+
+enum Direction : int8_t {
+    NORTH = 8, WEST = -1, SOUTH = -8, EAST = 1, NORTH_EAST = 9, NORTH_WEST = 7, SOUTH_WEST = -9, SOUTH_EAST = -7
+};
+
 enum Square : uint8_t
 {
     SQ_A1,
@@ -118,6 +123,8 @@ enum Square : uint8_t
     SQ_H8,
     NO_SQ
 };
+
+inline Square operator+(Square &a, int b) { return Square(int(a) + b); }
 
 enum Value : int16_t
 {
