@@ -832,95 +832,6 @@ U64 Board::LegalKingMovesCastling(Color c, Square sq)
     return moves;
 }
 
-Movelist Board::legalmoves()
-{
-    Movelist movelist{};
-    movelist.size = 0;
-
-    init(sideToMove, KingSQ(sideToMove));
-    if (doubleCheck < 2)
-    {
-        U64 pawns_mask = Pawns(sideToMove);
-        U64 knights_mask = Knights(sideToMove);
-        U64 bishops_mask = Bishops(sideToMove);
-        U64 rooks_mask = Rooks(sideToMove);
-        U64 queens_mask = Queens(sideToMove);
-
-        const bool noEP = enPassantSquare == NO_SQ;
-
-        while (pawns_mask)
-        {
-            Square from = poplsb(pawns_mask);
-            U64 moves = noEP ? LegalPawnMoves(sideToMove, from) : LegalPawnMovesEP(sideToMove, from, enPassantSquare);
-            while (moves)
-            {
-                Square to = poplsb(moves);
-                if (square_rank(to) == 7 || square_rank(to) == 0)
-                {
-                    movelist.Add(make(QUEEN, from, to, true));
-                    movelist.Add(make(ROOK, from, to, true));
-                    movelist.Add(make(KNIGHT, from, to, true));
-                    movelist.Add(make(BISHOP, from, to, true));
-                }
-                else
-                {
-                    movelist.Add(make(PAWN, from, to, false));
-                }
-            }
-        }
-        while (knights_mask)
-        {
-            Square from = poplsb(knights_mask);
-            U64 moves = LegalKnightMoves(from);
-            while (moves)
-            {
-                Square to = poplsb(moves);
-                movelist.Add(make(KNIGHT, from, to, false));
-            }
-        }
-        while (bishops_mask)
-        {
-            Square from = poplsb(bishops_mask);
-            U64 moves = LegalBishopMoves(from);
-            while (moves)
-            {
-                Square to = poplsb(moves);
-                movelist.Add(make(BISHOP, from, to, false));
-            }
-        }
-        while (rooks_mask)
-        {
-            Square from = poplsb(rooks_mask);
-            U64 moves = LegalRookMoves(from);
-            while (moves)
-            {
-                Square to = poplsb(moves);
-                movelist.Add(make(ROOK, from, to, false));
-            }
-        }
-        while (queens_mask)
-        {
-            Square from = poplsb(queens_mask);
-            U64 moves = LegalQueenMoves(from);
-            while (moves)
-            {
-                Square to = poplsb(moves);
-                movelist.Add(make(QUEEN, from, to, false));
-            }
-        }
-    }
-
-    Square from = KingSQ(sideToMove);
-    U64 moves = !castlingRights || checkMask != DEFAULT_CHECKMASK ? LegalKingMoves(from)
-                                                                  : LegalKingMovesCastling(sideToMove, from);
-    while (moves)
-    {
-        Square to = poplsb(moves);
-        movelist.Add(make(KING, from, to, false));
-    }
-    return movelist;
-}
-
 Movelist Board::capturemoves()
 {
     Movelist movelist{};
@@ -1005,6 +916,149 @@ Movelist Board::capturemoves()
     }
     return movelist;
 }
+
+template<Color sideToMove>
+Movelist generateLegalMoves(Board &board) {
+    Movelist movelist{};
+    movelist.size = 0;
+
+    board.init(sideToMove, board.KingSQ(sideToMove));
+    if (board.doubleCheck < 2) {
+        U64 pawns_mask = board.Pawns(sideToMove);
+        U64 knights_mask = board.Knights(sideToMove);
+        U64 bishops_mask = board.Bishops(sideToMove);
+        U64 rooks_mask = board.Rooks(sideToMove);
+        U64 queens_mask = board.Queens(sideToMove);
+        U64 empty = ~board.occAll;
+        U64 enemy = board.occEnemy;
+        U64 moveHV = ~board.pinD;
+        U64 moveD = ~board.pinHV;
+
+
+        const bool noEP = board.enPassantSquare == NO_SQ;
+
+        constexpr Direction UP = sideToMove == White ? NORTH : SOUTH;
+        constexpr Direction UP_LEFT = sideToMove == White ? NORTH_WEST : SOUTH_EAST;
+        constexpr Direction UP_RIGHT = sideToMove == White ? NORTH_EAST : SOUTH_WEST;
+        constexpr Direction DOWN = sideToMove == Black ? NORTH : SOUTH;
+        constexpr Direction DOWN_LEFT = sideToMove == Black ? NORTH_EAST : SOUTH_WEST;
+        constexpr Direction DOWN_RIGHT = sideToMove == Black ? NORTH_WEST : SOUTH_EAST;
+        constexpr U64 RANK_BEFORE_PROMO = sideToMove == White ? MASK_RANK[7] : MASK_RANK[1];
+
+        U64 pawnsBeforePromo = pawns_mask & RANK_BEFORE_PROMO;
+
+        U64 singlePush = step<UP>(pawns_mask & moveHV) & empty;
+        U64 doublePush = step<UP>(singlePush) & empty;
+        U64 captureRight = step<UP_RIGHT>(pawns_mask & moveD) & enemy & board.checkMask;
+        U64 captureLeft = step<UP_LEFT>(pawns_mask & moveD) & enemy & board.checkMask;
+        singlePush &= board.checkMask;
+        doublePush &= board.checkMask;
+
+        U64 promoUp = step<UP>(pawns_mask & moveHV & RANK_BEFORE_PROMO) & empty & board.checkMask;
+        U64 promoLeft = step<UP_LEFT>(pawns_mask & moveD & RANK_BEFORE_PROMO) & enemy & board.checkMask;
+        U64 promoRight = step<UP_RIGHT>(pawns_mask & moveD & RANK_BEFORE_PROMO) & enemy & board.checkMask;
+
+        while (singlePush) {
+            Square to = poplsb(singlePush);
+            movelist.Add(make(PAWN, to + DOWN, to, false));
+        }
+
+        while (doublePush) {
+            Square to = poplsb(doublePush);
+            movelist.Add(make(PAWN, Square(Square(to + DOWN) + DOWN), to, false));
+        }
+
+        while (captureRight) {
+            Square to = poplsb(captureRight);
+            movelist.Add(make(PAWN, to + DOWN_LEFT, to, false));
+        }
+
+        while (captureLeft) {
+            Square to = poplsb(captureLeft);
+            movelist.Add(make(PAWN, to + DOWN_RIGHT, to, false));
+        }
+
+        if (pawnsBeforePromo) {
+            while (promoUp) {
+                Square to = poplsb(promoUp);
+                Square from = to + DOWN;
+                movelist.Add(make(QUEEN, from, to, true));
+                movelist.Add(make(ROOK, from, to, true));
+                movelist.Add(make(KNIGHT, from, to, true));
+                movelist.Add(make(BISHOP, from, to, true));
+            }
+
+            while (promoRight) {
+                Square to = poplsb(promoRight);
+                Square from = to + DOWN_LEFT;
+                movelist.Add(make(QUEEN, from, to, true));
+                movelist.Add(make(ROOK, from, to, true));
+                movelist.Add(make(KNIGHT, from, to, true));
+                movelist.Add(make(BISHOP, from, to, true));
+            }
+
+            while (promoLeft) {
+                Square to = poplsb(promoLeft);
+                Square from = to + DOWN_RIGHT;
+                movelist.Add(make(QUEEN, from, to, true));
+                movelist.Add(make(ROOK, from, to, true));
+                movelist.Add(make(KNIGHT, from, to, true));
+                movelist.Add(make(BISHOP, from, to, true));
+            }
+        }
+
+        while (knights_mask) {
+            Square from = poplsb(knights_mask);
+            U64 moves = board.LegalKnightMoves(from);
+            while (moves) {
+                Square to = poplsb(moves);
+                movelist.Add(make(KNIGHT, from, to, false));
+            }
+        }
+        while (bishops_mask) {
+            Square from = poplsb(bishops_mask);
+            U64 moves = board.LegalBishopMoves(from);
+            while (moves) {
+                Square to = poplsb(moves);
+                movelist.Add(make(BISHOP, from, to, false));
+            }
+        }
+        while (rooks_mask) {
+            Square from = poplsb(rooks_mask);
+            U64 moves = board.LegalRookMoves(from);
+            while (moves) {
+                Square to = poplsb(moves);
+                movelist.Add(make(ROOK, from, to, false));
+            }
+        }
+        while (queens_mask) {
+            Square from = poplsb(queens_mask);
+            U64 moves = board.LegalQueenMoves(from);
+            while (moves) {
+                Square to = poplsb(moves);
+                movelist.Add(make(QUEEN, from, to, false));
+            }
+        }
+    }
+
+    Square from = board.KingSQ(sideToMove);
+    U64 moves = !board.castlingRights || board.checkMask != DEFAULT_CHECKMASK ? board.LegalKingMoves(from)
+                                                                              : board.LegalKingMovesCastling(sideToMove, from);
+    while (moves) {
+        Square to = poplsb(moves);
+        movelist.Add(make(KING, from, to, false));
+    }
+    return movelist;
+}
+
+Movelist Board::legalmoves() {
+    if (sideToMove == White) {
+        return generateLegalMoves<White>(*this);
+    } else {
+        return generateLegalMoves<Black>(*this);
+    }
+}
+
 
 void Board::makeNullMove()
 {
