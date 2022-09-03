@@ -1,29 +1,45 @@
 #include "search.h"
 
-#define hhEntry(bestmove, td) &td->history_table[td->board.sideToMove][from(bestmove)][to(bestmove)]
-
 int bonus(int depth)
 {
-    return std::min(1000, depth * 32 - 50);
+    return std::min(2000, depth * depth);
+}
+
+int Search::getHistory(Move move, ThreadData *td)
+{
+    return td->history_table[td->board.sideToMove][from(move)][to(move)];
+}
+
+void Search::updateHistoryBonus(Move move, int bonus, ThreadData *td)
+{
+    td->history_table[td->board.sideToMove][from(move)][to(move)] +=
+        bonus - getHistory(move, td) * std::abs(bonus) / (16384 * 2);
+}
+
+void Search::updateHistory(Move bestmove, int bonus, int depth, Movelist &quietMoves, ThreadData *td)
+{
+    if (depth > 1)
+        updateHistoryBonus(bestmove, bonus, td);
+
+    for (int i = 0; i < quietMoves.size; i++)
+    {
+        const Move move = quietMoves.list[i];
+        if (move == bestmove)
+            continue;
+
+        updateHistoryBonus(move, -bonus, td);
+    }
 }
 
 void Search::UpdateHH(Move bestMove, Score best, Score beta, int depth, Movelist &quietMoves, ThreadData *td)
 {
+    if (best < beta)
+        return;
+
     if (td->board.pieceAtB(to(bestMove)) == None)
     {
-        if (best < beta)
-            return;
-        int b = bonus(depth);
-        b += b - *hhEntry(bestMove, td) * std::abs(b) / 16384;
-        if (depth > 1)
-            *hhEntry(bestMove, td) += b;
-        for (int i = 0; i < quietMoves.size; i++)
-        {
-            const Move move = quietMoves.list[i];
-            if (move == bestMove)
-                continue;
-            *hhEntry(move, td) -= b;
-        }
+        int depthBonus = bonus(depth);
+        updateHistory(bestMove, depthBonus, depth, quietMoves, td);
     }
 }
 
@@ -100,7 +116,7 @@ template <Node node> Score Search::qsearch(Score alpha, Score beta, Stack *ss, T
             continue;
 
         // see based capture pruning
-        if (bestValue > VALUE_MATED_IN_PLY && captured != None && !see(move, -100, td->board))
+        if (bestValue > VALUE_MATED_IN_PLY && captured != None && !see(move, 0, td->board))
             continue;
 
         td->nodes++;
@@ -272,7 +288,9 @@ moves:
 
     // assign a value to each move
     for (int i = 0; i < ml.size; i++)
+    {
         ml.values[i] = scoreMove(ml.list[i], ss->ply, ttHit, td);
+    }
 
     // set root node move list size
     if (RootNode && td->id == 0)
@@ -292,9 +310,6 @@ moves:
 
         Move move = ml.list[i];
         bool capture = td->board.pieceAtB(to(move)) != None;
-
-        if (!capture)
-            quietMoves.Add(move);
 
         int newDepth = depth - 1;
 
@@ -381,19 +396,20 @@ moves:
                         td->killerMoves[1][ss->ply] = td->killerMoves[0][ss->ply];
                         td->killerMoves[0][ss->ply] = move;
                     }
-
+                    UpdateHH(bestMove, best, beta, depth, quietMoves, td);
                     break;
                 }
             }
         }
+        if (!capture)
+            quietMoves.Add(move);
     }
 
     // update history heuristic
-    UpdateHH(bestMove, best, beta, depth, quietMoves, td);
 
     // Store position in TT
     Flag b = best >= beta ? LOWERBOUND : (alpha != oldAlpha ? EXACT : UPPERBOUND);
-    if (!stopped && !RootNode)
+    if (!stopped)
         storeEntry(depth, score_to_tt(best, ss->ply), b, td->board.hashKey, bestMove);
     return best;
 }
@@ -564,10 +580,10 @@ bool Search::see(Move &move, int threshold, Board &board)
     Square to_sq = to(move);
     PieceType attacker = type_of_piece(board.pieceAtB(from_sq));
     PieceType victim = type_of_piece(board.pieceAtB(to_sq));
-    int swap = piece_values[MG][victim] - threshold;
+    int swap = piece_values_default[victim] - threshold;
     if (swap < 0)
         return false;
-    swap -= piece_values[MG][attacker];
+    swap -= piece_values_default[attacker];
     if (swap >= 0)
         return true;
     U64 occ = (board.All() ^ (1ULL << from_sq)) | (1ULL << to_sq);
@@ -629,7 +645,7 @@ int Search::scoreMove(Move &move, int ply, bool ttMove, ThreadData *td)
     }
     else if (td->board.pieceAtB(to(move)) != None)
     {
-        return see(move, -100, td->board) ? 7'000'000 + mmlva(move, td->board) : mmlva(move, td->board);
+        return see(move, 0, td->board) ? 7'000'000 + mmlva(move, td->board) : mmlva(move, td->board);
     }
     else if (td->killerMoves[0][ply] == move)
     {
@@ -641,7 +657,7 @@ int Search::scoreMove(Move &move, int ply, bool ttMove, ThreadData *td)
     }
     else
     {
-        return td->history_table[td->board.sideToMove][from(move)][to(move)];
+        return getHistory(move, td);
     }
 }
 
@@ -653,7 +669,7 @@ int Search::scoreQmove(Move &move, Board &board)
     }
     else if (board.pieceAtB(to(move)) != None)
     {
-        return see(move, -100, board) ? mmlva(move, board) * 10000 : mmlva(move, board);
+        return see(move, 0, board) ? mmlva(move, board) * 10000 : mmlva(move, board);
     }
     else
     {
